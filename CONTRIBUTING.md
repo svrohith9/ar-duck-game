@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for your interest in AR Duck Game.
+Thanks for your interest in Escape Ducks.
 
 ## Getting started
 1. Fork the repo and create a feature branch.

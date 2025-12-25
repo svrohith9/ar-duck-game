@@ -1,4 +1,4 @@
-# AR Duck Game
+# Escape Ducks
 
 A camera‑driven dodge game where you move in real life to survive a rain of ducks. Built for macOS browsers with real‑time pose + face tracking and a minimalist sports‑tech UI.
 
