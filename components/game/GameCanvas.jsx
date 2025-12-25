@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import useGameStore from '../../store/gameStore';
-import { useAnimationFrame } from '../../hooks/useAnimationFrame';
 import { usePoseDetection } from '../../hooks/usePoseDetection';
-import { useDuckSpawner } from './DuckSpawner';
+import { useDuckSpawner } from '../../hooks/useDuckSpawner';
+import { loadDuckAssets } from '../../lib/assetManager';
 
 const TARGET_POINTS = ['nose', 'left_eye', 'right_eye'];
 
@@ -10,16 +10,20 @@ export default function GameCanvas({ onGameOver, onShoot }) {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const { detectorRef, faceDetectorRef, initDetectors } = usePoseDetection();
-  const { ducks, reset: resetDucks, update: updateDucks } = useDuckSpawner();
+  const { ducksRef, reset: resetDucks, update: updateDucks } = useDuckSpawner();
   const [floatingText, setFloatingText] = useState([]);
   const lastFrameRef = useRef(0);
-  const lastDomUpdateRef = useRef(0);
-  const [domDucks, setDomDucks] = useState([]);
   const scoreTickRef = useRef(0);
   const poseRef = useRef(null);
   const frameBusyRef = useRef(false);
   const faceStrideRef = useRef(0);
   const resizeTimeoutRef = useRef(null);
+  const assetsRef = useRef(null);
+  const pausedRef = useRef(false);
+  const rafRef = useRef(null);
+  const accumulatorRef = useRef(0);
+  const lastTimeRef = useRef(0);
+  const dprRef = useRef(1);
 
   const {
     loseLife,
@@ -65,10 +69,10 @@ export default function GameCanvas({ onGameOver, onShoot }) {
   const drawVideo = useCallback(() => {
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.clearRect(0, 0, canvas.clientWidth, canvas.clientHeight);
     ctx.save();
     ctx.scale(-1, 1);
-    ctx.drawImage(videoRef.current, -canvas.width, 0, canvas.width, canvas.height);
+    ctx.drawImage(videoRef.current, -canvas.clientWidth, 0, canvas.clientWidth, canvas.clientHeight);
     ctx.restore();
   }, []);
 
@@ -76,8 +80,8 @@ export default function GameCanvas({ onGameOver, onShoot }) {
     if (!face || !face.keypoints) return;
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
-    const scaleX = canvas.width / videoRef.current.videoWidth;
-    const scaleY = canvas.height / videoRef.current.videoHeight;
+    const scaleX = canvas.clientWidth / videoRef.current.videoWidth;
+    const scaleY = canvas.clientHeight / videoRef.current.videoHeight;
     const stride = 4;
     ctx.fillStyle = '#66d9ff';
     for (let i = 0; i < face.keypoints.length; i += stride) {
@@ -92,8 +96,8 @@ export default function GameCanvas({ onGameOver, onShoot }) {
     if (!pose?.keypoints) return;
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
-    const scaleX = canvas.width / videoRef.current.videoWidth;
-    const scaleY = canvas.height / videoRef.current.videoHeight;
+    const scaleX = canvas.clientWidth / videoRef.current.videoWidth;
+    const scaleY = canvas.clientHeight / videoRef.current.videoHeight;
     const pulse = (Math.sin(time / 220) + 1) * 0.5;
 
     const nose = pose.keypoints.find((k) => k.name === 'nose');
@@ -122,19 +126,26 @@ export default function GameCanvas({ onGameOver, onShoot }) {
   const renderDucks = useCallback(() => {
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
-    ducks.current.forEach((duck) => {
-      if (!duck.active) return;
-      ctx.fillStyle = '#f9e406';
-      ctx.beginPath();
-      ctx.ellipse(duck.x, duck.y, duck.size * 1.2, duck.size, 0, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = '#ff7a3d';
-      ctx.beginPath();
-      ctx.ellipse(duck.x + duck.size * 0.8, duck.y - duck.size * 0.2, duck.size * 0.4, duck.size * 0.2, 0, 0, Math.PI * 2);
-      ctx.fill();
-    });
+    ctx.imageSmoothingEnabled = true;
 
-  }, [ducks]);
+    ducksRef.current.forEach((duck) => {
+      if (!duck.active || duck.despawning) return;
+      const size = 128 * duck.scale;
+      if (duck.shadow) {
+        ctx.save();
+        ctx.globalAlpha = 0.6;
+        ctx.drawImage(duck.shadow, duck.x - 32, duck.shadowY - 16, 64, 64);
+        ctx.restore();
+      }
+      if (duck.image) {
+        ctx.save();
+        ctx.translate(duck.x, duck.y);
+        ctx.rotate((duck.rotation * Math.PI) / 180);
+        ctx.drawImage(duck.image, -size / 2, -size / 2, size, size);
+        ctx.restore();
+      }
+    });
+  }, [ducksRef]);
 
   const getTargetPoints = useCallback((pose) => {
     if (!pose?.keypoints) return [];
@@ -147,20 +158,21 @@ export default function GameCanvas({ onGameOver, onShoot }) {
     const points = getTargetPoints(poseRef.current);
     if (points.length === 0) return;
     const hitRadius = 14;
-    const scaleX = canvas.width / videoRef.current.videoWidth;
-    const scaleY = canvas.height / videoRef.current.videoHeight;
+    const scaleX = canvas.clientWidth / videoRef.current.videoWidth;
+    const scaleY = canvas.clientHeight / videoRef.current.videoHeight;
 
-    ducks.current.forEach((duck) => {
-      if (!duck.active) return;
+    ducksRef.current.forEach((duck) => {
+      if (!duck.active || duck.despawning) return;
       const hit = points.some((point) => {
         const px = point.x * scaleX;
         const py = point.y * scaleY;
         const dx = duck.x - px;
         const dy = duck.y - py;
-        return Math.hypot(dx, dy) < hitRadius + duck.size * 0.9;
+        const duckRadius = 64 * duck.scale;
+        return Math.hypot(dx, dy) < hitRadius + duckRadius * 0.9;
       });
       if (hit) {
-        duck.active = false;
+        duck.despawning = true;
         const currentLives = useGameStore.getState().lives;
         const nextLives = currentLives - 1;
         loseLife();
@@ -170,7 +182,7 @@ export default function GameCanvas({ onGameOver, onShoot }) {
         }
       }
     });
-  }, [ducks, endGame, getTargetPoints, loseLife, onGameOver]);
+  }, [ducksRef, endGame, getTargetPoints, loseLife, onGameOver]);
 
   const addFloatingText = useCallback((label) => {
     setFloatingText((prev) => [
@@ -182,64 +194,87 @@ export default function GameCanvas({ onGameOver, onShoot }) {
     }, 1200);
   }, []);
 
-  useAnimationFrame(async (delta, time) => {
-    if (!videoRef.current || !canvasRef.current) return;
-    if (!detectorRef.current) return;
-    if (paused) return;
-    if (frameBusyRef.current) return;
-    frameBusyRef.current = true;
+  useEffect(() => {
+    pausedRef.current = paused;
+  }, [paused]);
 
-    try {
-      const poseResults = await detectorRef.current.estimatePoses(videoRef.current, {
-        flipHorizontal: true,
-      });
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    dprRef.current = Math.min(window.devicePixelRatio || 1, 2);
 
-      const pose = poseResults[0];
-      poseRef.current = pose || null;
+    const updateCanvasSize = () => {
+      const dpr = dprRef.current;
+      canvas.width = canvas.clientWidth * dpr;
+      canvas.height = canvas.clientHeight * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    };
 
-      let face = null;
-      if (faceDetectorRef.current) {
-        faceStrideRef.current += 1;
-        if (faceStrideRef.current % 2 === 0) {
-          const faces = await faceDetectorRef.current.estimateFaces(videoRef.current, {
-            flipHorizontal: true,
-          });
-          face = faces[0] || null;
+    updateCanvasSize();
+    lastTimeRef.current = 0;
+    accumulatorRef.current = 0;
+
+    const loop = async (time) => {
+      rafRef.current = requestAnimationFrame(loop);
+      if (!videoRef.current || !detectorRef.current || !assetsRef.current) return;
+      if (frameBusyRef.current) return;
+
+      let dt = time - (lastTimeRef.current || time);
+      lastTimeRef.current = time;
+      if (dt > 100) dt = 16.67;
+      accumulatorRef.current += dt;
+
+      frameBusyRef.current = true;
+      try {
+        while (accumulatorRef.current >= 16.67) {
+          if (!pausedRef.current) {
+            const poseResults = await detectorRef.current.estimatePoses(videoRef.current, { flipHorizontal: true });
+            const pose = poseResults[0];
+            poseRef.current = pose || null;
+
+            let face = null;
+            if (faceDetectorRef.current) {
+              faceStrideRef.current += 1;
+              if (faceStrideRef.current % 2 === 0) {
+                const faces = await faceDetectorRef.current.estimateFaces(videoRef.current, { flipHorizontal: true });
+                face = faces[0] || null;
+              }
+            }
+
+            drawVideo();
+            updateDucks(16.67, canvas.clientHeight, canvas.clientWidth, assetsRef.current);
+            renderDucks();
+            renderTrackingPoints(pose, time);
+            renderFace(face);
+            checkCollisions();
+
+            scoreTickRef.current += 16.67;
+            if (scoreTickRef.current >= 1000) {
+              addScore(10);
+              scoreTickRef.current = 0;
+            }
+          }
+
+          accumulatorRef.current -= 16.67;
         }
+      } catch (error) {
+        console.error('Detection error:', error);
+      } finally {
+        frameBusyRef.current = false;
       }
+    };
 
-      drawVideo();
-      updateDucks(delta, canvasRef.current.height, canvasRef.current.width);
-      renderDucks();
-      renderTrackingPoints(pose, time);
-      renderFace(face);
-      checkCollisions();
-
-      if (time - lastDomUpdateRef.current > 120) {
-        lastDomUpdateRef.current = time;
-        setDomDucks(ducks.current.filter((duck) => duck.active).map((duck) => ({
-          x: duck.x,
-          y: duck.y,
-          size: duck.size,
-        })));
-      }
-
-      scoreTickRef.current += delta;
-      if (scoreTickRef.current >= 1000) {
-        addScore(10);
-        scoreTickRef.current = 0;
-      }
-    } catch (error) {
-      console.error('Detection error:', error);
-    } finally {
-      frameBusyRef.current = false;
-    }
-  }, { fpsCap: 60 });
+    rafRef.current = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(rafRef.current);
+  }, [addScore, checkCollisions, drawVideo, renderDucks, renderFace, renderTrackingPoints, updateDucks]);
 
   useEffect(() => {
     let mounted = true;
     const init = async () => {
       try {
+        const assets = await loadDuckAssets();
+        assetsRef.current = assets;
         await initCamera();
         const detectors = await initDetectors();
         if (mounted && detectors?.detector) setTracking(true);
@@ -280,20 +315,6 @@ export default function GameCanvas({ onGameOver, onShoot }) {
       <video ref={videoRef} className="absolute inset-0 w-full h-full object-cover invisible" autoPlay playsInline />
       <canvas ref={canvasRef} className="absolute inset-0 w-full h-full" />
       <div className="absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-black/10 pointer-events-none" />
-      {domDucks.map((duck, index) => (
-        <div
-          key={`duck-${index}`}
-          className="duck-target absolute pointer-events-none"
-          style={{
-            width: `${duck.size * 2}px`,
-            height: `${duck.size * 2}px`,
-            left: `${duck.x - duck.size}px`,
-            top: `${duck.y - duck.size}px`,
-          }}
-        >
-          <div className="w-full h-full rounded-full bg-primary/60 shadow-[0_0_18px_rgba(249,228,6,0.4)]" />
-        </div>
-      ))}
       {floatingText.length > 0 && (
         <div className="absolute inset-0 pointer-events-none">
           {floatingText.map((entry) => (

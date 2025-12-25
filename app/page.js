@@ -4,14 +4,11 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import useGameStore from '../store/gameStore';
 import { useWebXR } from '../hooks/useWebXR';
-import { useCamera } from '../hooks/useCamera';
 import Icon from '../components/ui/Icon';
-import LoadingSpinner from '../components/ui/LoadingSpinner';
 
 export default function StartScreen() {
   const router = useRouter();
   const { isSupported } = useWebXR();
-  const { requestCamera, loading } = useCamera();
   const [offset, setOffset] = useState({ x: 0, y: 0 });
 
   const setWebXRSupported = useGameStore((state) => state.setWebXRSupported);
@@ -28,15 +25,9 @@ export default function StartScreen() {
   }, [resetGame]);
 
   const handleStart = async () => {
-    const { stream, error } = await requestCamera();
-    if (stream) {
-      stream.getTracks().forEach((track) => track.stop());
-      setCameraPermission(true);
-      startGame();
-      router.push('/gameplay');
-    } else if (error) {
-      setCameraPermission(false);
-    }
+    setCameraPermission(false);
+    startGame();
+    router.push('/gameplay');
   };
 
   const handleMouseMove = (event) => {
@@ -98,13 +89,11 @@ export default function StartScreen() {
           <div className="w-full flex flex-col gap-10 items-center">
             <button
               onClick={handleStart}
-              disabled={loading}
-              className="group relative flex items-center justify-center w-full md:w-96 h-20 md:h-24 bg-primary hover:bg-primary-hover text-background-dark text-2xl md:text-3xl font-black tracking-tight rounded-full shadow-[0_0_40px_-10px_rgba(249,228,6,0.6)] hover:shadow-[0_0_80px_-20px_rgba(249,228,6,0.8)] transition-all duration-300 transform hover:scale-105 active:scale-95 disabled:opacity-70"
+              className="group relative flex items-center justify-center w-full md:w-96 h-20 md:h-24 bg-primary hover:bg-primary-hover text-background-dark text-2xl md:text-3xl font-black tracking-tight rounded-full shadow-[0_0_40px_-10px_rgba(249,228,6,0.6)] hover:shadow-[0_0_80px_-20px_rgba(249,228,6,0.8)] transition-all duration-300 transform hover:scale-105 active:scale-95"
             >
               <Icon name="view_in_ar" className="mr-4 text-4xl group-hover:rotate-12 transition-transform duration-300" />
-              {loading ? 'REQUESTING CAMERA' : 'START GAME'}
+              START GAME
             </button>
-            {loading && <LoadingSpinner label="Waiting for camera access" />}
             <div className="h-2" />
           </div>
         </div>
