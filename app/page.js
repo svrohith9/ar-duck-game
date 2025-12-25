@@ -600,8 +600,8 @@ export default function Page() {
 
       <aside className="sidebar">
         <div>
-          <div className="brand">StrideLab</div>
-          <div className="tagline">Live motion intelligence for sports training</div>
+          <div className="brand">AR Duck Game</div>
+          <div className="tagline">Real-time AR dodge challenge</div>
         </div>
 
         <div className="panel">

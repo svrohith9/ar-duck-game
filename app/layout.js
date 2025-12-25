@@ -1,8 +1,8 @@
 import './globals.css';
 
 export const metadata = {
-  title: 'StrideLab | Live Motion Tracker',
-  description: 'Sports-tech live pose and face tracking optimized for macOS.',
+  title: 'AR Duck Game',
+  description: 'AR Duck Game: real-time camera dodge game with pose tracking.',
 };
 
 export default function RootLayout({ children }) {
