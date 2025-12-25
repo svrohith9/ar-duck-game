@@ -17,13 +17,13 @@ export default function GameCanvas({ onGameOver, onShoot }) {
   const poseRef = useRef(null);
   const frameBusyRef = useRef(false);
   const faceStrideRef = useRef(0);
-  const resizeTimeoutRef = useRef(null);
   const assetsRef = useRef(null);
   const pausedRef = useRef(false);
   const rafRef = useRef(null);
   const accumulatorRef = useRef(0);
   const lastTimeRef = useRef(0);
   const dprRef = useRef(1);
+  const videoTrackRef = useRef(null);
 
   const {
     loseLife,
@@ -34,17 +34,22 @@ export default function GameCanvas({ onGameOver, onShoot }) {
   } = useGameStore();
 
   const initCamera = useCallback(async () => {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const targetWidth = Math.min(Math.floor(window.innerWidth * dpr), 1920);
+    const targetHeight = Math.min(Math.floor(window.innerHeight * dpr), 1080);
     const stream = await navigator.mediaDevices.getUserMedia({
       video: {
-        width: { max: 1280 },
-        height: { max: 720 },
-        frameRate: { max: 30 },
+        width: { ideal: targetWidth },
+        height: { ideal: targetHeight },
+        frameRate: { ideal: 30, max: 60 },
         facingMode: 'user',
       },
       audio: false,
     });
 
     videoRef.current.srcObject = stream;
+    const [track] = stream.getVideoTracks();
+    videoTrackRef.current = track || null;
     await new Promise((resolve) => {
       videoRef.current.onloadedmetadata = () => {
         videoRef.current.play();
@@ -53,26 +58,55 @@ export default function GameCanvas({ onGameOver, onShoot }) {
     });
   }, []);
 
-  const resizeCanvas = useCallback(() => {
-    if (!canvasRef.current) return;
-    canvasRef.current.width = window.innerWidth;
-    canvasRef.current.height = window.innerHeight;
-  }, []);
+  const updateCanvasSize = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    dprRef.current = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = canvas.clientWidth * dprRef.current;
+    canvas.height = canvas.clientHeight * dprRef.current;
+    ctx.setTransform(dprRef.current, 0, 0, dprRef.current, 0, 0);
 
-  const debouncedResize = useCallback(() => {
-    if (resizeTimeoutRef.current) {
-      clearTimeout(resizeTimeoutRef.current);
+    if (videoTrackRef.current?.applyConstraints) {
+      const targetWidth = Math.min(Math.floor(canvas.clientWidth * dprRef.current), 1920);
+      const targetHeight = Math.min(Math.floor(canvas.clientHeight * dprRef.current), 1080);
+      videoTrackRef.current.applyConstraints({
+        width: { ideal: targetWidth },
+        height: { ideal: targetHeight },
+        frameRate: { ideal: 30, max: 60 },
+      }).catch(() => {});
     }
-    resizeTimeoutRef.current = setTimeout(resizeCanvas, 120);
-  }, [resizeCanvas]);
+  }, []);
 
   const drawVideo = useCallback(() => {
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
     ctx.clearRect(0, 0, canvas.clientWidth, canvas.clientHeight);
+    const vw = videoRef.current.videoWidth || canvas.clientWidth;
+    const vh = videoRef.current.videoHeight || canvas.clientHeight;
+    const cw = canvas.clientWidth;
+    const ch = canvas.clientHeight;
+    const videoAspect = vw / vh;
+    const canvasAspect = cw / ch;
+
+    let drawW = cw;
+    let drawH = ch;
+    let dx = 0;
+    let dy = 0;
+
+    if (videoAspect > canvasAspect) {
+      drawH = ch;
+      drawW = ch * videoAspect;
+      dx = (cw - drawW) / 2;
+    } else {
+      drawW = cw;
+      drawH = cw / videoAspect;
+      dy = (ch - drawH) / 2;
+    }
+
     ctx.save();
     ctx.scale(-1, 1);
-    ctx.drawImage(videoRef.current, -canvas.clientWidth, 0, canvas.clientWidth, canvas.clientHeight);
+    ctx.drawImage(videoRef.current, -(dx + drawW), dy, drawW, drawH);
     ctx.restore();
   }, []);
 
@@ -201,16 +235,6 @@ export default function GameCanvas({ onGameOver, onShoot }) {
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    dprRef.current = Math.min(window.devicePixelRatio || 1, 2);
-
-    const updateCanvasSize = () => {
-      const dpr = dprRef.current;
-      canvas.width = canvas.clientWidth * dpr;
-      canvas.height = canvas.clientHeight * dpr;
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    };
-
     updateCanvasSize();
     lastTimeRef.current = 0;
     accumulatorRef.current = 0;
@@ -267,7 +291,7 @@ export default function GameCanvas({ onGameOver, onShoot }) {
 
     rafRef.current = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(rafRef.current);
-  }, [addScore, checkCollisions, drawVideo, renderDucks, renderFace, renderTrackingPoints, updateDucks]);
+  }, [addScore, checkCollisions, drawVideo, renderDucks, renderFace, renderTrackingPoints, updateDucks, updateCanvasSize]);
 
   useEffect(() => {
     let mounted = true;
@@ -284,17 +308,29 @@ export default function GameCanvas({ onGameOver, onShoot }) {
       }
     };
     init();
-    resizeCanvas();
-    window.addEventListener('resize', debouncedResize);
+    updateCanvasSize();
+
+    let observer = null;
+    if (window.ResizeObserver) {
+      observer = new ResizeObserver(() => updateCanvasSize());
+      if (canvasRef.current?.parentElement) {
+        observer.observe(canvasRef.current.parentElement);
+      } else {
+        observer.observe(canvasRef.current);
+      }
+    } else {
+      window.addEventListener('resize', updateCanvasSize);
+    }
     return () => {
       mounted = false;
-      window.removeEventListener('resize', debouncedResize);
+      if (observer) observer.disconnect();
+      window.removeEventListener('resize', updateCanvasSize);
       if (videoRef.current?.srcObject) {
         videoRef.current.srcObject.getTracks().forEach((track) => track.stop());
       }
       setTracking(false);
     };
-  }, [debouncedResize, initCamera, initDetectors, resizeCanvas, setTracking]);
+  }, [initCamera, initDetectors, setTracking, updateCanvasSize]);
 
   useEffect(() => {
     resetDucks();
